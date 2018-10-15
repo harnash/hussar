@@ -1,13 +1,28 @@
 package main
 
 import (
+	"fmt"
+	"github.com/golang/protobuf/proto"
+	"github.com/harnash/hussar/cavalry/transport"
+	"github.com/nats-io/nats"
 	"go.uber.org/zap"
-	"nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/sub"
-	"nanomsg.org/go-mangos/transport/ipc"
-	"nanomsg.org/go-mangos/transport/tcp"
 	"os"
+	"sync"
 )
+
+func RunServiceDiscoverable(address string) {
+	nc, err := nats.Connect(address)
+	if err != nil {
+		fmt.Println("Can't connect to NATS. Service is not discoverable.")
+	}
+	nc.Subscribe("Discovery.hussary", func(m *nats.Msg) {
+		serviceAddressTransport := transport.DiscoverableServiceTransport{Address: "http://localhost:3000"}
+		data, err := proto.Marshal(&serviceAddressTransport)
+		if err == nil {
+			nc.Publish(m.Reply, data)
+		}
+	})
+}
 
 func main() {
 	var err error
@@ -19,33 +34,11 @@ func main() {
 	defer logger.Sync()
 	sugar := logger.With(zap.String("app", "hussar-cavalry")).Sugar()
 
-	sugar.Info("preparing the cavalry!")
+	sugar.With("nats", os.Args[1]).Info("preparing the cavalry!")
 
-	var sock mangos.Socket
-	var msg []byte
+	RunServiceDiscoverable(os.Args[1])
 
-	if sock, err = sub.NewSocket(); err != nil {
-		sugar.Errorw("can't get new sub socket", "err", err)
-		os.Exit(1)
-	}
-
-	sock.AddTransport(ipc.NewTransport())
-	sock.AddTransport(tcp.NewTransport())
-	if err = sock.Dial("tcp://127.0.0.1:40899"); err != nil {
-		sugar.Errorw("can't dial on sub socket", "err", err)
-		os.Exit(2)
-	}
-	// Empty byte array effectively subscribes to everything
-	err = sock.SetOption(mangos.OptionSubscribe, []byte(""))
-	if err != nil {
-		sugar.Errorw("cannot subscribe", "err", err)
-		os.Exit(3)
-	}
-	for {
-		if msg, err = sock.Recv(); err != nil {
-			sugar.Errorw("cannot recv", "err", err)
-			os.Exit(4)
-		}
-		sugar.Infow("received message", "msg", msg)
-	}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	wg.Wait()
 }

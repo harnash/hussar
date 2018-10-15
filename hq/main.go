@@ -1,17 +1,33 @@
 package main
 
 import (
+	"github.com/golang/protobuf/proto"
+	"github.com/harnash/hussar/cavalry/transport"
+	"github.com/nats-io/nats"
 	"go.uber.org/zap"
-	"nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/pub"
-	"nanomsg.org/go-mangos/transport/ipc"
-	"nanomsg.org/go-mangos/transport/tcp"
 	"os"
+	"sync"
 	"time"
 )
 
-func date() string {
-	return time.Now().Format(time.ANSIC)
+var nc *nats.Conn
+
+func discoverServices(logger *zap.SugaredLogger) {
+	for {
+		msg, err := nc.Request("Discovery.hussary", nil, 1000*time.Millisecond)
+		if err != nil {
+			logger.With("err", err).Error("something went wrong. Waiting 2 seconds before retrying:")
+			continue
+		}
+		fileServerAddressTransport := Transport.DiscoverableServiceTransport{}
+		err = proto.Unmarshal(msg.Data, &fileServerAddressTransport)
+		if err != nil {
+			logger.With("err", err).Error("something went wrong. Waiting 2 seconds before retrying:")
+			continue
+		}
+
+		logger.With("address", fileServerAddressTransport.Address).Info("detected new service")
+	}
 }
 
 func main() {
@@ -23,28 +39,22 @@ func main() {
 	defer logger.Sync()
 	sugar := logger.With(zap.String("app", "hussar-hq")).Sugar()
 
-	sugar.Info("starting HQ!")
-
-	var sock mangos.Socket
-	if sock, err = pub.NewSocket(); err != nil {
-		sugar.Errorw("cannot create socket", "err", err)
+	if len(os.Args) != 2 {
+		sugar.Error("wrong number of arguments. Need NATS server address.")
 		os.Exit(1)
 	}
-	sock.AddTransport(ipc.NewTransport())
-	sock.AddTransport(tcp.NewTransport())
 
-	if err = sock.Listen("tcp://127.0.0.1:40899"); err != nil {
-		sugar.Errorw("cannot listen on a given url", "err", err)
+	nc, err = nats.Connect(os.Args[1])
+	if err != nil {
+		sugar.With("err", err, "address", os.Args[1]).Error("error connecting to NATS server")
 		os.Exit(2)
 	}
 
-	for {
-		d := date()
-		sugar.Infow("publishing date", zap.String("date", d))
-		if err = sock.Send([]byte(d)); err != nil {
-			sugar.Errorw("failed publishing", "err", err)
-			os.Exit(3)
-		}
-		time.Sleep(time.Second)
-	}
+	sugar.With("nats", os.Args[1]).Info("starting HQ!")
+
+	go discoverServices(sugar)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	wg.Wait()
 }
